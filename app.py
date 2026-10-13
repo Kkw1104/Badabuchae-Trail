@@ -6,6 +6,17 @@ import requests
 import streamlit as st
 
 # ==============================================================================
+# 0. 한국 표준시(KST, UTC+9) 고정 함수
+# ==============================================================================
+KST = datetime.timezone(datetime.timedelta(hours=9))
+
+
+def get_now_kst():
+  """해외 클라우드 서버 환경에서도 한국 표준시를 반환"""
+  return datetime.datetime.now(KST)
+
+
+# ==============================================================================
 # 1. 페이지 환경설정
 # ==============================================================================
 st.set_page_config(
@@ -34,10 +45,10 @@ LIMITS = {
 
 
 # ==============================================================================
-# 3. 데이터 수집 및 전처리 파이프라인
+# 3. 데이터 수집 및 전처리 파이프라인 (KST 기준)
 # ==============================================================================
 def get_latest_base_datetime():
-  now = datetime.datetime.now()
+  now = get_now_kst()
   fcst_times = [2, 5, 8, 11, 14, 17, 20, 23]
   cur_hour, cur_min = now.hour, now.minute
   target_date = now.strftime("%Y%m%d")
@@ -65,9 +76,8 @@ def clean_numeric_val(val):
   return float(m.group(1)) if m else 0.0
 
 
-@st.cache_data(ttl=3600)
-def fetch_forecast_data(auth_key):
-  base_date, base_time = get_latest_base_datetime()
+@st.cache_data(ttl=1800)
+def fetch_forecast_data(auth_key, base_date, base_time):
   url = "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0/getVilageFcst"
   params = {
       "pageNo": "1",
@@ -111,14 +121,15 @@ def fetch_forecast_data(auth_key):
       pivot_df["PCP_NUM"].rolling(window=3, min_periods=1).sum()
   )
 
-  return pivot_df, base_date, base_time
+  return pivot_df
 
 
 # ==============================================================================
 # 4. 실시간 당일 리스크 & 복합 골든타임 평가
 # ==============================================================================
 def evaluate_today_risk(df):
-  today_str = datetime.datetime.now().strftime("%Y%m%d")
+  now_kst = get_now_kst()
+  today_str = now_kst.strftime("%Y%m%d")
   today_df = df[df["fcstDate"] == today_str].copy()
   if today_df.empty:
     today_df = df.head(24).copy()
@@ -231,17 +242,43 @@ def evaluate_today_risk(df):
         f" {b_pcp}mm)"
     )
   else:
-    best_time = "당일 운영 시간대 예보 확인 필요"
+    # 17시 이후 접속 시 익일 골든타임 자동 연계
+    tmrw_str = (now_kst + datetime.timedelta(days=1)).strftime("%Y%m%d")
+    tmrw_open = df[
+        (df["fcstDate"] == tmrw_str)
+        & (
+            df["fcstTime"].isin([
+                "0900",
+                "1000",
+                "1100",
+                "1200",
+                "1300",
+                "1400",
+                "1500",
+                "1600",
+            ])
+        )
+    ]
+    if not tmrw_open.empty:
+      b_row = tmrw_open.sort_values(
+          by=["WAV", "PCP_NUM", "WSD"], ascending=[True, True, True]
+      ).iloc[0]
+      b_hour = b_row["fcstTime"][:2]
+      best_time = (
+          f"내일 {b_hour}:00 경 (파고 {b_row['WAV']}m, 풍속 {b_row['WSD']}m/s)"
+      )
+    else:
+      best_time = "운영 시간대 예보 확인 요망"
 
   return m_stat, m_desc, a_stat, a_desc, best_time
 
 
 # ==============================================================================
-# 5. 향후 5일간 일별 운영 예측 엔진 (오늘, 내일, 모레, 3일뒤, 4일뒤)
+# 5. 향후 5일간 일별 운영 예측 엔진 (KST 기준)
 # ==============================================================================
 def evaluate_5day_forecast(df):
   daily_results = []
-  base_dt = datetime.datetime.now()
+  base_dt = get_now_kst()
   weekday_kr = ["월", "화", "수", "목", "금", "토", "일"]
   labels = ["오늘", "내일", "모레", "3일 뒤", "4일 뒤"]
 
@@ -344,7 +381,8 @@ def evaluate_5day_forecast(df):
 # 6. 메인 화면 렌더링
 # ==============================================================================
 try:
-  df, base_date, base_time = fetch_forecast_data(AUTH_KEY)
+  base_date, base_time = get_latest_base_datetime()
+  df = fetch_forecast_data(AUTH_KEY, base_date, base_time)
   m_stat, m_desc, a_stat, a_desc, best_time = evaluate_today_risk(df)
   forecast_5days = evaluate_5day_forecast(df)
 except Exception as e:
