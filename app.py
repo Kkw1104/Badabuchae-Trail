@@ -17,13 +17,50 @@ def get_now_kst():
 
 
 # ==============================================================================
-# 1. 페이지 기본 환경설정 (공공기관 웹 표준 레이아웃)
+# 1. 페이지 기본 환경설정 및 모바일·PC 표 가운데 정렬 스타일
 # ==============================================================================
 st.set_page_config(
     page_title="정동·심곡 바다부채길 기상 및 탐방 안내",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+
+# PC 및 모바일 표 가운데 정렬·줄바꿈 방지 CSS 적용
+st.html("""
+<style>
+div[data-testid="stMarkdownContainer"] table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+    margin: 0 auto !important;
+}
+div[data-testid="stMarkdownContainer"] th,
+div[data-testid="stMarkdownContainer"] td {
+    text-align: center !important;
+    vertical-align: middle !important;
+    white-space: nowrap !important;
+    word-break: keep-all !important;
+    padding: 10px 6px !important;
+    font-size: 0.95rem !important;
+    border: 1px solid #cbd5e1 !important;
+}
+div[data-testid="stMarkdownContainer"] th {
+    background-color: #f1f5f9 !important;
+    color: #0f172a !important;
+    font-weight: 700 !important;
+    border-bottom: 2px solid #94a3b8 !important;
+}
+div[data-testid="stMarkdownContainer"] tr:nth-child(even) td {
+    background-color: #f8fafc !important;
+}
+@media (max-width: 640px) {
+    div[data-testid="stMarkdownContainer"] th,
+    div[data-testid="stMarkdownContainer"] td {
+        padding: 7px 3px !important;
+        font-size: 0.80rem !important;
+    }
+}
+</style>
+""")
 
 # ==============================================================================
 # 2. 기상청 API 설정 및 해안 탐방로 안전 관리 기준
@@ -44,7 +81,7 @@ LIMITS = {
 
 
 # ==============================================================================
-# 3. 기상청 단기예보 데이터 수집 및 전처리
+# 3. 기상청 단기예보 데이터 수집 및 전처리 (당일/내일/모레 24시간 확보)
 # ==============================================================================
 def get_latest_base_datetime():
   now = get_now_kst()
@@ -75,23 +112,43 @@ def clean_numeric_val(val):
   return float(m.group(1)) if m else 0.0
 
 
-@st.cache_data(ttl=1800)
-def fetch_forecast_data(auth_key, base_date, base_time):
+def request_kma_items(auth_key, b_date, b_time):
   url = "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0/getVilageFcst"
   params = {
       "pageNo": "1",
       "numOfRows": "1000",
       "dataType": "JSON",
-      "base_date": base_date,
-      "base_time": base_time,
+      "base_date": b_date,
+      "base_time": b_time,
       "nx": GRID_NX,
       "ny": GRID_NY,
       "authKey": auth_key,
   }
-
   res = requests.get(url, params=params, timeout=10).json()
-  items = res["response"]["body"]["items"]["item"]
-  df = pd.DataFrame(items)
+  return res["response"]["body"]["items"]["item"]
+
+
+@st.cache_data(ttl=1800)
+def fetch_forecast_data(auth_key, base_date, base_time):
+  now_kst = get_now_kst()
+  yesterday_str = (now_kst - datetime.timedelta(days=1)).strftime("%Y%m%d")
+
+  # 당일 00시~23시 전체 24시간 그래프를 위해 전일 23시 예보와 최신 예보를 병합
+  all_items = []
+  if not (base_date == yesterday_str and base_time == "2300"):
+    try:
+      early_items = request_kma_items(auth_key, yesterday_str, "2300")
+      all_items.extend(early_items)
+    except Exception:
+      pass
+
+  latest_items = request_kma_items(auth_key, base_date, base_time)
+  all_items.extend(latest_items)
+
+  df = pd.DataFrame(all_items)
+  df = df.drop_duplicates(
+      subset=["fcstDate", "fcstTime", "category"], keep="last"
+  )
 
   pivot_df = df.pivot(
       index=["fcstDate", "fcstTime"], columns="category", values="fcstValue"
@@ -120,10 +177,18 @@ def fetch_forecast_data(auth_key, base_date, base_time):
       pivot_df["PCP_NUM"].rolling(window=3, min_periods=1).sum()
   )
 
-  # 한글 일시 표기 컬럼 생성 (어르신 가독성 개선)
   weekday_kr = ["월", "화", "수", "목", "금", "토", "일"]
+  # 1) 툴팁 및 상세표용 한글 시간 표기
   pivot_df["KR_TIME"] = pivot_df["DATETIME"].apply(
       lambda d: f"{d.month}/{d.day}({weekday_kr[d.weekday()]}) {d.hour:02d}시"
+  )
+  # 2) 모바일 표 전용 간결한 시간 표기
+  pivot_df["TABLE_TIME"] = pivot_df["DATETIME"].apply(
+      lambda d: f"{d.month}/{d.day} {d.hour:02d}시"
+  )
+  # 3) 그래프 X축 전용 세로 정렬 표기 (4번째 사진 형태: 10 / 15 / 09시)
+  pivot_df["X_STACK_LABEL"] = pivot_df["DATETIME"].apply(
+      lambda d: f"{d.month}<br>/<br>{d.day}<br>{d.hour:02d}시"
   )
 
   return pivot_df
@@ -224,21 +289,16 @@ def evaluate_today_risk(df):
     a_desc = f"낮 최고 파도 {open_wav:.1f}m, 바람 {open_wsd:.1f}m/s로 마감 시간까지 편안한 관람이 가능합니다."
 
   # [쾌적 탐방 추천 시간대]
-  open_hours = today_df[
-      today_df["fcstTime"].isin(
-          ["0900", "1000", "1100", "1200", "1300", "1400", "1500", "1600"]
-      )
-  ].copy()
-  if not open_hours.empty:
-    best_row = open_hours.sort_values(
+  cur_h_str = f"{now_kst.hour:02d}00"
+  rem_open = open_data[open_data["fcstTime"] >= cur_h_str].copy()
+  if not rem_open.empty and now_kst.hour <= 16:
+    best_row = rem_open.sort_values(
         by=["WAV", "PCP_NUM", "WSD"], ascending=[True, True, True]
     ).iloc[0]
     b_hour = int(best_row["fcstTime"][:2])
-    b_wav = best_row["WAV"]
-    b_wsd = best_row["WSD"]
     best_time = (
-        f"오늘 {b_hour}시 전후 (예상 파도 {b_wav:.1f}m, 바람 {b_wsd:.1f}m/s로"
-        " 가장 잔잔한 시간대)"
+        f"오늘 {b_hour}시 전후 (예상 파도 {best_row['WAV']:.1f}m, 바람"
+        f" {best_row['WSD']:.1f}m/s로 가장 잔잔한 시간대)"
     )
   else:
     tmrw_str = (now_kst + datetime.timedelta(days=1)).strftime("%Y%m%d")
@@ -263,7 +323,7 @@ def evaluate_today_risk(df):
       ).iloc[0]
       b_hour = int(b_row["fcstTime"][:2])
       best_time = (
-          f"내일 {b_hour}시 전후 (금일 매표 마감 / 내일 예상 파도"
+          f"내일 {b_hour}시 전후 (금일 입장 마감 / 내일 예상 파도"
           f" {b_row['WAV']:.1f}m, 바람 {b_row['WSD']:.1f}m/s)"
       )
     else:
@@ -377,7 +437,6 @@ def evaluate_5day_forecast(df):
 
 
 def render_status_box(level, text):
-  """시니어 가독성을 위해 색상 박스로 상태를 큼직하게 표시"""
   if level == "safe":
     st.success(f"**[정상 개방]** {text}")
   elif level == "caution":
@@ -389,7 +448,7 @@ def render_status_box(level, text):
 
 
 # ==============================================================================
-# 6. 메인 데이터 로드 및 화면 출력
+# 6. 메인 데이터 로드 및 상단 화면 구성
 # ==============================================================================
 try:
   base_date, base_time = get_latest_base_datetime()
@@ -406,7 +465,7 @@ except Exception as e:
   st.stop()
 
 
-# [초기 안내 팝업창 - 공공기관 공지 모달 형태]
+# [초기 안내 팝업창]
 @st.dialog("정동·심곡 바다부채길 금일 탐방 안내")
 def show_safety_modal():
   st.markdown("#### 금일 기상 여건에 따른 탐방로 운영 전망")
@@ -452,7 +511,7 @@ with col_b:
   if st.button("금일 요약 안내창 다시 열기", type="primary", width="stretch"):
     show_safety_modal()
 
-# 이용 시간 및 문의처 안내 바 (어르신 필수 확인 정보)
+# 이용 시간 및 문의처 안내
 with st.container(border=True):
   info_c1, info_c2 = st.columns(2)
   with info_c1:
@@ -518,45 +577,111 @@ for i, item in enumerate(forecast_5days):
 st.write("")
 
 # ==============================================================================
-# 섹션 3. 시간대별 기상 추이 그래프 (고대비·큰 글씨·한글 축 적용)
+# 섹션 3. [오늘 / 내일 / 모레] 버튼 선택형 24시간 기상 그래프 (모바일 최적화)
 # ==============================================================================
-st.subheader("3. 시간대별 기상 추이 그래프 (향후 48시간)")
+st.subheader("3. 일자별 24시간 기상 추이 그래프")
 st.write(
-    "그래프에 마우스를 올리거나 화면을 터치하시면 해당 시각의 정확한 수치를 큰"
-    " 글씨로 확인하실 수 있습니다."
+    "아래에서 **오늘, 내일, 모레** 버튼을 누르시면 해당 날짜의 24시간 날씨"
+    " 그래프와 하단 상세표를 확인하실 수 있습니다."
 )
 
-plot_df = df.head(48).copy()
-
-# 6시간 간격 한글 눈금 생성 (글자 겹침 방지 및 가독성 확보)
-tick_indices = [
-    i
-    for i, d in enumerate(plot_df["DATETIME"])
-    if d.hour in [0, 6, 12, 18] or i == 0
+now_kst = get_now_kst()
+weekday_kr = ["월", "화", "수", "목", "금", "토", "일"]
+day_objs = [now_kst + datetime.timedelta(days=i) for i in range(3)]
+day_strs = [d.strftime("%Y%m%d") for d in day_objs]
+day_titles = [
+    f"오늘 ({day_objs[0].month}/{day_objs[0].day}"
+    f" {weekday_kr[day_objs[0].weekday()]}) 24시간",
+    f"내일 ({day_objs[1].month}/{day_objs[1].day}"
+    f" {weekday_kr[day_objs[1].weekday()]}) 24시간",
+    f"모레 ({day_objs[2].month}/{day_objs[2].day}"
+    f" {weekday_kr[day_objs[2].weekday()]}) 24시간",
 ]
-tick_vals = [plot_df["KR_TIME"].iloc[i] for i in tick_indices]
 
+if "selected_day_idx" not in st.session_state:
+  st.session_state.selected_day_idx = 0
+
+# [오늘 / 내일 / 모레] 선택 버튼
+btn_c1, btn_c2, btn_c3 = st.columns(3)
+with btn_c1:
+  if st.button(
+      day_titles[0],
+      type="primary" if st.session_state.selected_day_idx == 0 else "secondary",
+      width="stretch",
+  ):
+    st.session_state.selected_day_idx = 0
+    st.rerun()
+with btn_c2:
+  if st.button(
+      day_titles[1],
+      type="primary" if st.session_state.selected_day_idx == 1 else "secondary",
+      width="stretch",
+  ):
+    st.session_state.selected_day_idx = 1
+    st.rerun()
+with btn_c3:
+  if st.button(
+      day_titles[2],
+      type="primary" if st.session_state.selected_day_idx == 2 else "secondary",
+      width="stretch",
+  ):
+    st.session_state.selected_day_idx = 2
+    st.rerun()
+
+sel_idx = st.session_state.selected_day_idx
+sel_date_str = day_strs[sel_idx]
+plot_df = df[df["fcstDate"] == sel_date_str].copy()
+
+# 만약 당일 이전 시간 데이터가 부족할 경우 접속 시점부터 24시간 데이터를 보장
+if len(plot_df) < 12:
+  plot_df = df.head(24).copy()
+
+# 3시간 간격 눈금 추출 및 4번째 사진 형태(10 / 15 / 09시) 똑바른 세로 배열 적용
+tick_mask = [
+    (d.hour % 3 == 0) or (idx == 0) for idx, d in enumerate(plot_df["DATETIME"])
+]
+tick_vals = [
+    plot_df["KR_TIME"].iloc[i] for i in range(len(plot_df)) if tick_mask[i]
+]
+tick_texts = [
+    plot_df["X_STACK_LABEL"].iloc[i]
+    for i in range(len(plot_df))
+    if tick_mask[i]
+]
+
+# 모바일과 PC 모두에서 그래프가 꽉 차게 보이도록 여백 및 상단 범례 최적화
 chart_layout = dict(
     paper_bgcolor="#ffffff",
     plot_bgcolor="#f8f9fa",
-    font=dict(color="#111111", size=15),
+    font=dict(color="#111111", size=13),
     hovermode="x unified",
-    hoverlabel=dict(bgcolor="#ffffff", font_size=15, font_color="#111111"),
-    margin=dict(l=50, r=40, t=55, b=45),
+    hoverlabel=dict(bgcolor="#ffffff", font_size=14, font_color="#111111"),
+    margin=dict(l=38, r=14, t=48, b=85),
+    legend=dict(
+        orientation="h",
+        yanchor="bottom",
+        y=1.04,
+        xanchor="center",
+        x=0.5,
+        font=dict(size=12, color="#111111"),
+    ),
     xaxis=dict(
-        title="예보 일시",
+        title=dict(text="예보 일시", standoff=12),
         tickmode="array",
         tickvals=tick_vals,
-        ticktext=tick_vals,
+        ticktext=tick_texts,
+        tickangle=0,  # 글자가 옆으로 눕지 않도록 0도 고정
         showgrid=True,
         gridcolor="#dee2e6",
-        tickfont=dict(size=13, color="#111111"),
+        tickfont=dict(size=12, color="#111111"),
     ),
 )
 
+plotly_config = {"displayModeBar": False}
+
 # (1) 파도 높이 차트
 with st.container(border=True):
-  st.markdown("#### (1) 파도 높이 (유의파고) 예측")
+  st.markdown(f"#### (1) 파도 높이 (유의파고) 예측 - {day_titles[sel_idx]}")
   st.write(
       "해안 데크 특성상 파도 높이가 **1.8m 이상**이면 물보라 및 월파 위험으로"
       " 방문 자제가 권고되며, **3.0m 이상** 시 전면 출입 통제됩니다."
@@ -577,34 +702,36 @@ with st.container(border=True):
       line_dash="dash",
       line_color="#d90429",
       line_width=2,
-      annotation_text=f"출입통제 기준 ({LIMITS['WAVE_DANGER']}m)",
-      annotation_position="top right",
-      annotation_font=dict(size=14, color="#d90429"),
+      annotation_text=f"출입통제 ({LIMITS['WAVE_DANGER']}m)",
+      annotation_position="top left",
+      annotation_bgcolor="rgba(255,255,255,0.85)",
+      annotation_font=dict(size=12, color="#d90429"),
   )
   fig_wav.add_hline(
       y=LIMITS["WAVE_CAUTION"],
       line_dash="dot",
       line_color="#d97706",
       line_width=2,
-      annotation_text=f"방문주의 기준 ({LIMITS['WAVE_CAUTION']}m)",
-      annotation_position="top right",
-      annotation_font=dict(size=14, color="#d97706"),
+      annotation_text=f"방문주의 ({LIMITS['WAVE_CAUTION']}m)",
+      annotation_position="top left",
+      annotation_bgcolor="rgba(255,255,255,0.85)",
+      annotation_font=dict(size=12, color="#d97706"),
   )
   fig_wav.update_layout(
       **chart_layout,
       yaxis=dict(
-          title="파도 높이 (m)",
+          title="파도 (m)",
           range=[0, 4.0],
           showgrid=True,
           gridcolor="#dee2e6",
       ),
-      height=340,
+      height=360,
   )
-  st.plotly_chart(fig_wav, width="stretch")
+  st.plotly_chart(fig_wav, width="stretch", config=plotly_config)
 
 # (2) 바람 세기 차트
 with st.container(border=True):
-  st.markdown("#### (2) 바람 세기 (풍속) 예측")
+  st.markdown(f"#### (2) 바람 세기 (풍속) 예측 - {day_titles[sel_idx]}")
   st.write(
       "바람 세기가 초속 **10.0m/s 이상**이면 보행 시 강풍 주의가 필요하며,"
       " **14.0m/s 이상** 시 안전을 위해 출입이 통제됩니다."
@@ -625,158 +752,168 @@ with st.container(border=True):
       line_dash="dash",
       line_color="#d90429",
       line_width=2,
-      annotation_text=f"출입통제 기준 ({LIMITS['WIND_DANGER']}m/s)",
-      annotation_position="top right",
-      annotation_font=dict(size=14, color="#d90429"),
+      annotation_text=f"출입통제 ({LIMITS['WIND_DANGER']}m/s)",
+      annotation_position="top left",
+      annotation_bgcolor="rgba(255,255,255,0.85)",
+      annotation_font=dict(size=12, color="#d90429"),
   )
   fig_wsd.add_hline(
       y=LIMITS["WIND_CAUTION"],
       line_dash="dot",
       line_color="#d97706",
       line_width=2,
-      annotation_text=f"방문주의 기준 ({LIMITS['WIND_CAUTION']}m/s)",
-      annotation_position="top right",
-      annotation_font=dict(size=14, color="#d97706"),
+      annotation_text=f"방문주의 ({LIMITS['WIND_CAUTION']}m/s)",
+      annotation_position="top left",
+      annotation_bgcolor="rgba(255,255,255,0.85)",
+      annotation_font=dict(size=12, color="#d97706"),
   )
   fig_wsd.update_layout(
       **chart_layout,
       yaxis=dict(
-          title="바람 세기 (m/s)",
+          title="바람 (m/s)",
           range=[0, 18.0],
+          showgrid=True,
+          gridcolor="#dee2e6",
+      ),
+      height=360,
+  )
+  st.plotly_chart(fig_wsd, width="stretch", config=plotly_config)
+
+# (3) 강수량 차트 (모바일 시인성을 위해 단독 전체 폭 배치 및 상단 범례 적용)
+with st.container(border=True):
+  st.markdown(f"#### (3) 비 (강수량) 예측 - {day_titles[sel_idx]}")
+  st.write("시간당 **15mm 이상** 비가 내릴 경우 데크 미끄럼 주의가 요구됩니다.")
+  fig_pcp = go.Figure()
+  fig_pcp.add_trace(
+      go.Bar(
+          x=plot_df["KR_TIME"],
+          y=plot_df["PCP_NUM"],
+          name="1시간 강수량 (mm)",
+          marker_color="#2563eb",
+      )
+  )
+  fig_pcp.add_trace(
+      go.Scatter(
+          x=plot_df["KR_TIME"],
+          y=plot_df["PCP_3H"],
+          mode="lines+markers",
+          name="3시간 누적 강수 (mm)",
+          line=dict(color="#1d4ed8", width=2.5, dash="dash"),
+      )
+  )
+  fig_pcp.add_hline(
+      y=LIMITS["RAIN_1H_CAUTION"],
+      line_dash="dot",
+      line_color="#d97706",
+      line_width=2,
+      annotation_text=f"미끄럼 주의 ({LIMITS['RAIN_1H_CAUTION']}mm)",
+      annotation_position="top left",
+      annotation_bgcolor="rgba(255,255,255,0.85)",
+      annotation_font=dict(size=12, color="#d97706"),
+  )
+  fig_pcp.update_layout(
+      **chart_layout,
+      yaxis=dict(
+          title="강수 (mm)",
+          range=[0, max(25.0, plot_df["PCP_3H"].max() + 5.0)],
+          showgrid=True,
+          gridcolor="#dee2e6",
+      ),
+      barmode="overlay",
+      height=360,
+  )
+  st.plotly_chart(fig_pcp, width="stretch", config=plotly_config)
+
+# (4) 신적설량 차트
+with st.container(border=True):
+  st.markdown(f"#### (4) 눈 (신적설량) 예측 - {day_titles[sel_idx]}")
+  st.write(
+      "**0.5cm 이상** 눈이 쌓일 경우 데크 결빙 방지를 위해 제설 후 개방됩니다."
+  )
+  fig_sno = go.Figure()
+  fig_sno.add_trace(
+      go.Bar(
+          x=plot_df["KR_TIME"],
+          y=plot_df["SNO_NUM"],
+          name="1시간 적설량 (cm)",
+          marker_color="#4f46e5",
+      )
+  )
+  fig_sno.add_hline(
+      y=LIMITS["SNOW_CAUTION"],
+      line_dash="dot",
+      line_color="#d97706",
+      line_width=2,
+      annotation_text=f"제설 기준 ({LIMITS['SNOW_CAUTION']}cm)",
+      annotation_position="top left",
+      annotation_bgcolor="rgba(255,255,255,0.85)",
+      annotation_font=dict(size=12, color="#d97706"),
+  )
+  fig_sno.update_layout(
+      **chart_layout,
+      yaxis=dict(
+          title="적설 (cm)",
+          range=[0, max(3.0, plot_df["SNO_NUM"].max() + 1.0)],
           showgrid=True,
           gridcolor="#dee2e6",
       ),
       height=340,
   )
-  st.plotly_chart(fig_wsd, width="stretch")
-
-# (3) 강수량 및 적설량 차트 (2열 배치로 스크롤 피로도 감소)
-c_rain, c_snow = st.columns(2)
-with c_rain:
-  with st.container(border=True):
-    st.markdown("#### (3) 비 (강수량) 예측")
-    st.write(
-        "시간당 **15mm 이상** 비가 내릴 경우 데크 미끄럼 주의가 요구됩니다."
-    )
-    fig_pcp = go.Figure()
-    fig_pcp.add_trace(
-        go.Bar(
-            x=plot_df["KR_TIME"],
-            y=plot_df["PCP_NUM"],
-            name="1시간 강수량 (mm)",
-            marker_color="#2563eb",
-        )
-    )
-    fig_pcp.add_trace(
-        go.Scatter(
-            x=plot_df["KR_TIME"],
-            y=plot_df["PCP_3H"],
-            mode="lines+markers",
-            name="3시간 누적 강수 (mm)",
-            line=dict(color="#1d4ed8", width=2.5, dash="dash"),
-        )
-    )
-    fig_pcp.add_hline(
-        y=LIMITS["RAIN_1H_CAUTION"],
-        line_dash="dot",
-        line_color="#d97706",
-        line_width=2,
-        annotation_text=f"미끄럼 주의 ({LIMITS['RAIN_1H_CAUTION']}mm)",
-        annotation_position="top right",
-    )
-    fig_pcp.update_layout(
-        **chart_layout,
-        yaxis=dict(
-            title="강수량 (mm)",
-            range=[0, max(25.0, plot_df["PCP_3H"].max() + 5.0)],
-            showgrid=True,
-            gridcolor="#dee2e6",
-        ),
-        barmode="overlay",
-        height=320,
-    )
-    st.plotly_chart(fig_pcp, width="stretch")
-
-with c_snow:
-  with st.container(border=True):
-    st.markdown("#### (4) 눈 (신적설량) 예측")
-    st.write(
-        "**0.5cm 이상** 눈이 쌓일 경우 데크 결빙 방지를 위해 제설 후 개방됩니다."
-    )
-    fig_sno = go.Figure()
-    fig_sno.add_trace(
-        go.Bar(
-            x=plot_df["KR_TIME"],
-            y=plot_df["SNO_NUM"],
-            name="1시간 적설량 (cm)",
-            marker_color="#4f46e5",
-        )
-    )
-    fig_sno.add_hline(
-        y=LIMITS["SNOW_CAUTION"],
-        line_dash="dot",
-        line_color="#d97706",
-        line_width=2,
-        annotation_text=f"제설작업 기준 ({LIMITS['SNOW_CAUTION']}cm)",
-        annotation_position="top right",
-    )
-    fig_sno.update_layout(
-        **chart_layout,
-        yaxis=dict(
-            title="적설량 (cm)",
-            range=[0, max(3.0, plot_df["SNO_NUM"].max() + 1.0)],
-            showgrid=True,
-            gridcolor="#dee2e6",
-        ),
-        height=320,
-    )
-    st.plotly_chart(fig_sno, width="stretch")
+  st.plotly_chart(fig_sno, width="stretch", config=plotly_config)
 
 st.write("")
 
 # ==============================================================================
-# 섹션 4. 시간대별 기상 예보표 (단위 및 한글 판정 직접 표기)
+# 섹션 4. 시간대별 기상 예보 상세표 (PC·모바일 가운데 정렬 및 줄바꿈 방지)
 # ==============================================================================
-st.subheader("4. 시간대별 기상 예보 상세표 (향후 12시간)")
-st.write("각 시간대별 예상 기상 수치와 탐방 여건 판정 결과입니다.")
+st.subheader(f"4. 시간대별 기상 예보 상세표 - {day_titles[sel_idx]}")
+st.write(
+    "선택하신 날짜의 시간대별 기상 수치와 탐방 여건 판정 결과입니다. (단위:"
+    " 파고 m, 풍속 m/s, 강수 mm, 기온 ℃, 비확률 %)"
+)
 
 korean_table = plot_df[
-    ["KR_TIME", "WAV", "WSD", "PCP_NUM", "TMP", "POP"]
-].head(12).copy()
+    ["TABLE_TIME", "WAV", "WSD", "PCP_NUM", "TMP", "POP"]
+].copy()
 
 
 def get_row_status(row):
   if row["WAV"] >= LIMITS["WAVE_DANGER"] or row["WSD"] >= LIMITS["WIND_DANGER"]:
-    return "출입 통제 예상"
+    return "🔴통제예상"
   elif (
       row["WAV"] >= LIMITS["WAVE_CAUTION"]
       or row["WSD"] >= LIMITS["WIND_CAUTION"]
       or row["PCP_NUM"] >= LIMITS["RAIN_1H_CAUTION"]
   ):
-    return "방문 주의"
-  return "탐방 양호"
+    return "🟡방문주의"
+  return "🟢탐방양호"
 
 
-korean_table["탐방 여건"] = korean_table.apply(get_row_status, axis=1)
-korean_table["WAV"] = korean_table["WAV"].apply(lambda x: f"{x:.1f} m")
-korean_table["WSD"] = korean_table["WSD"].apply(lambda x: f"{x:.1f} m/s")
+korean_table["판정"] = korean_table.apply(get_row_status, axis=1)
+korean_table["WAV"] = korean_table["WAV"].apply(lambda x: f"{x:.1f}m")
+korean_table["WSD"] = korean_table["WSD"].apply(lambda x: f"{x:.1f}m/s")
 korean_table["PCP_NUM"] = korean_table["PCP_NUM"].apply(
-    lambda x: "강수 없음" if x == 0 else f"{x:.1f} mm"
+    lambda x: "없음" if x == 0 else f"{x:.1f}mm"
 )
-korean_table["TMP"] = korean_table["TMP"].apply(lambda x: f"{int(x)} ℃")
-korean_table["POP"] = korean_table["POP"].apply(lambda x: f"{int(x)} %")
+korean_table["TMP"] = korean_table["TMP"].apply(lambda x: f"{int(x)}℃")
+korean_table["POP"] = korean_table["POP"].apply(lambda x: f"{int(x)}%")
 
 korean_table.columns = [
-    "예보 일시",
-    "파도 높이",
-    "바람 세기",
-    "강수량",
+    "일시",
+    "파고",
+    "풍속",
+    "강수",
     "기온",
-    "비 올 확률",
-    "탐방 여건 판정",
+    "비확률",
+    "판정",
 ]
 
-st.markdown(korean_table.to_markdown(index=False))
+# 모든 열을 가운데 정렬(center)로 렌더링
+st.markdown(
+    korean_table.to_markdown(
+        index=False, colalign=("center",) * len(korean_table.columns)
+    )
+)
 
 st.divider()
 st.caption(
