@@ -1,7 +1,14 @@
 [theme]
-base="dark"
-primaryColor="#00b4d8"
-backgroundColor="#07111e"
-secondaryBackgroundColor="#0f1c30"
-textColor="#e0e6ed"
+base="light"
+primaryColor="#004ea2"
+backgroundColor="#ffffff"
+secondaryBackgroundColor="#f4f6f9"
+textColor="#111111"
 font="sans serif"
+
+[browser]
+gatherUsageStats=false
+
+[client]
+toolbarMode="minimal"
+showErrorDetails=false
