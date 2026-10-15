@@ -55,8 +55,8 @@ div[data-testid="stMarkdownContainer"] tr:nth-child(even) td {
 @media (max-width: 640px) {
     div[data-testid="stMarkdownContainer"] th,
     div[data-testid="stMarkdownContainer"] td {
-        padding: 7px 3px !important;
-        font-size: 0.80rem !important;
+        padding: 8px 4px !important;
+        font-size: 0.85rem !important;
     }
 }
 </style>
@@ -178,18 +178,12 @@ def fetch_forecast_data(auth_key, base_date, base_time):
   )
 
   weekday_kr = ["월", "화", "수", "목", "금", "토", "일"]
-  # 1) 툴팁 및 상세표용 한글 시간 표기
+  # 1) 마우스 오버/터치 툴팁용 전체 일시 표기
   pivot_df["KR_TIME"] = pivot_df["DATETIME"].apply(
       lambda d: f"{d.month}/{d.day}({weekday_kr[d.weekday()]}) {d.hour:02d}시"
   )
-  # 2) 모바일 표 전용 간결한 시간 표기
-  pivot_df["TABLE_TIME"] = pivot_df["DATETIME"].apply(
-      lambda d: f"{d.month}/{d.day} {d.hour:02d}시"
-  )
-  # 3) 그래프 X축 전용 세로 정렬 표기 (4번째 사진 형태: 10 / 15 / 09시)
-  pivot_df["X_STACK_LABEL"] = pivot_df["DATETIME"].apply(
-      lambda d: f"{d.month}<br>/<br>{d.day}<br>{d.hour:02d}시"
-  )
+  # 2) 그래프 X축 및 하단 상세표 전용 깔끔한 시간 표기 (예: 00시, 03시...)
+  pivot_df["HOUR_ONLY"] = pivot_df["DATETIME"].apply(lambda d: f"{d.hour:02d}시")
 
   return pivot_df
 
@@ -577,7 +571,7 @@ for i, item in enumerate(forecast_5days):
 st.write("")
 
 # ==============================================================================
-# 섹션 3. [오늘 / 내일 / 모레] 버튼 선택형 24시간 기상 그래프 (모바일 최적화)
+# 섹션 3. [오늘 / 내일 / 모레] 버튼 선택형 24시간 기상 그래프
 # ==============================================================================
 st.subheader("3. 일자별 24시간 기상 추이 그래프")
 st.write(
@@ -601,7 +595,7 @@ day_titles = [
 if "selected_day_idx" not in st.session_state:
   st.session_state.selected_day_idx = 0
 
-# [오늘 / 내일 / 모레] 선택 버튼
+# [오늘 / 내일 / 모레] 실시간 날짜 버튼
 btn_c1, btn_c2, btn_c3 = st.columns(3)
 with btn_c1:
   if st.button(
@@ -632,11 +626,10 @@ sel_idx = st.session_state.selected_day_idx
 sel_date_str = day_strs[sel_idx]
 plot_df = df[df["fcstDate"] == sel_date_str].copy()
 
-# 만약 당일 이전 시간 데이터가 부족할 경우 접속 시점부터 24시간 데이터를 보장
 if len(plot_df) < 12:
   plot_df = df.head(24).copy()
 
-# 3시간 간격 눈금 추출 및 4번째 사진 형태(10 / 15 / 09시) 똑바른 세로 배열 적용
+# 3시간 간격 눈금 추출: X축에는 깔끔하게 시간(00시, 03시...)만 가로로 표시
 tick_mask = [
     (d.hour % 3 == 0) or (idx == 0) for idx, d in enumerate(plot_df["DATETIME"])
 ]
@@ -644,19 +637,16 @@ tick_vals = [
     plot_df["KR_TIME"].iloc[i] for i in range(len(plot_df)) if tick_mask[i]
 ]
 tick_texts = [
-    plot_df["X_STACK_LABEL"].iloc[i]
-    for i in range(len(plot_df))
-    if tick_mask[i]
+    plot_df["HOUR_ONLY"].iloc[i] for i in range(len(plot_df)) if tick_mask[i]
 ]
 
-# 모바일과 PC 모두에서 그래프가 꽉 차게 보이도록 여백 및 상단 범례 최적화
 chart_layout = dict(
     paper_bgcolor="#ffffff",
     plot_bgcolor="#f8f9fa",
-    font=dict(color="#111111", size=13),
+    font=dict(color="#111111", size=14),
     hovermode="x unified",
     hoverlabel=dict(bgcolor="#ffffff", font_size=14, font_color="#111111"),
-    margin=dict(l=38, r=14, t=48, b=85),
+    margin=dict(l=38, r=14, t=48, b=50),
     legend=dict(
         orientation="h",
         yanchor="bottom",
@@ -666,14 +656,14 @@ chart_layout = dict(
         font=dict(size=12, color="#111111"),
     ),
     xaxis=dict(
-        title=dict(text="예보 일시", standoff=12),
+        title=dict(text="예보 시각", standoff=10),
         tickmode="array",
         tickvals=tick_vals,
         ticktext=tick_texts,
-        tickangle=0,  # 글자가 옆으로 눕지 않도록 0도 고정
+        tickangle=0,  # PC와 모바일 모두 가로 한 줄로 고정
         showgrid=True,
         gridcolor="#dee2e6",
-        tickfont=dict(size=12, color="#111111"),
+        tickfont=dict(size=13, color="#111111"),
     ),
 )
 
@@ -725,7 +715,7 @@ with st.container(border=True):
           showgrid=True,
           gridcolor="#dee2e6",
       ),
-      height=360,
+      height=330,
   )
   st.plotly_chart(fig_wav, width="stretch", config=plotly_config)
 
@@ -775,11 +765,11 @@ with st.container(border=True):
           showgrid=True,
           gridcolor="#dee2e6",
       ),
-      height=360,
+      height=330,
   )
   st.plotly_chart(fig_wsd, width="stretch", config=plotly_config)
 
-# (3) 강수량 차트 (모바일 시인성을 위해 단독 전체 폭 배치 및 상단 범례 적용)
+# (3) 강수량 차트
 with st.container(border=True):
   st.markdown(f"#### (3) 비 (강수량) 예측 - {day_titles[sel_idx]}")
   st.write("시간당 **15mm 이상** 비가 내릴 경우 데크 미끄럼 주의가 요구됩니다.")
@@ -820,7 +810,7 @@ with st.container(border=True):
           gridcolor="#dee2e6",
       ),
       barmode="overlay",
-      height=360,
+      height=330,
   )
   st.plotly_chart(fig_pcp, width="stretch", config=plotly_config)
 
@@ -857,14 +847,14 @@ with st.container(border=True):
           showgrid=True,
           gridcolor="#dee2e6",
       ),
-      height=340,
+      height=320,
   )
   st.plotly_chart(fig_sno, width="stretch", config=plotly_config)
 
 st.write("")
 
 # ==============================================================================
-# 섹션 4. 시간대별 기상 예보 상세표 (PC·모바일 가운데 정렬 및 줄바꿈 방지)
+# 섹션 4. 시간대별 기상 예보 상세표 (시간만 깔끔하게 표기 + 중앙 정렬)
 # ==============================================================================
 st.subheader(f"4. 시간대별 기상 예보 상세표 - {day_titles[sel_idx]}")
 st.write(
@@ -873,7 +863,7 @@ st.write(
 )
 
 korean_table = plot_df[
-    ["TABLE_TIME", "WAV", "WSD", "PCP_NUM", "TMP", "POP"]
+    ["HOUR_ONLY", "WAV", "WSD", "PCP_NUM", "TMP", "POP"]
 ].copy()
 
 
@@ -899,7 +889,7 @@ korean_table["TMP"] = korean_table["TMP"].apply(lambda x: f"{int(x)}℃")
 korean_table["POP"] = korean_table["POP"].apply(lambda x: f"{int(x)}%")
 
 korean_table.columns = [
-    "일시",
+    "시각",
     "파고",
     "풍속",
     "강수",
@@ -908,7 +898,6 @@ korean_table.columns = [
     "판정",
 ]
 
-# 모든 열을 가운데 정렬(center)로 렌더링
 st.markdown(
     korean_table.to_markdown(
         index=False, colalign=("center",) * len(korean_table.columns)
