@@ -3,3 +3,4 @@ pandas
 plotly
 requests
 tabulate
+pyarrow<25.0.0
