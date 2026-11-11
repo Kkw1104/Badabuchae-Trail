@@ -595,14 +595,8 @@ for i, item in enumerate(forecast_5days):
 st.write("")
 
 # ==============================================================================
-# 섹션 3. [오늘 / 내일 / 모레] 버튼 선택형 06시~18시 기상 그래프
+# 섹션 3 & 4. 캐싱 및 부분 렌더링(@st.fragment)을 적용한 고속 그래프·상세표
 # ==============================================================================
-st.subheader("3. 일자별 06시~18시 기상 추이 그래프")
-st.write(
-    "아래에서 **오늘, 내일, 모레** 버튼을 누르시면 바다부채길 운영 및 점검"
-    " 시간대(**06시~18시**)의 날씨 그래프와 하단 상세표를 확인하실 수 있습니다."
-)
-
 now_kst = get_now_kst()
 weekday_kr = ["월", "화", "수", "목", "금", "토", "일"]
 day_objs = [now_kst + datetime.timedelta(days=i) for i in range(3)]
@@ -619,107 +613,75 @@ day_titles = [
 if "selected_day_idx" not in st.session_state:
     st.session_state.selected_day_idx = 0
 
-# [오늘 / 내일 / 모레] 06시~18시 선택 버튼
-btn_c1, btn_c2, btn_c3 = st.columns(3)
-with btn_c1:
-    if st.button(
-        day_titles[0],
-        type="primary" if st.session_state.selected_day_idx == 0 else "secondary",
-        width="stretch",
-    ):
-        st.session_state.selected_day_idx = 0
-        st.rerun()
-with btn_c2:
-    if st.button(
-        day_titles[1],
-        type="primary" if st.session_state.selected_day_idx == 1 else "secondary",
-        width="stretch",
-    ):
-        st.session_state.selected_day_idx = 1
-        st.rerun()
-with btn_c3:
-    if st.button(
-        day_titles[2],
-        type="primary" if st.session_state.selected_day_idx == 2 else "secondary",
-        width="stretch",
-    ):
-        st.session_state.selected_day_idx = 2
-        st.rerun()
 
-sel_idx = st.session_state.selected_day_idx
-sel_date_str = day_strs[sel_idx]
+def select_day(idx):
+    """중복 st.rerun() 없이 1회 실행만으로 버튼 상태와 그래프를 전환하는 콜백"""
+    st.session_state.selected_day_idx = idx
 
-# 선택한 날짜의 06시 ~ 18시 데이터만 필터링
-plot_df = (
-    df[
-        (df["fcstDate"] == sel_date_str)
-        & (df["DATETIME"].dt.hour >= 6)
-        & (df["DATETIME"].dt.hour <= 18)
-    ]
-    .copy()
-    .reset_index(drop=True)
-)
 
-if plot_df.empty:
+@st.cache_data(ttl=1800, show_spinner=False)
+def build_day_charts_and_table(df, sel_date_str):
+    """0.1 CPU 환경에서도 버튼 클릭 시 재계산하지 않도록 그래프 5개와 표를 메모리에 캐싱"""
     plot_df = (
-        df[(df["DATETIME"].dt.hour >= 6) & (df["DATETIME"].dt.hour <= 18)]
-        .head(13)
+        df[
+            (df["fcstDate"] == sel_date_str)
+            & (df["DATETIME"].dt.hour >= 6)
+            & (df["DATETIME"].dt.hour <= 18)
+        ]
         .copy()
         .reset_index(drop=True)
     )
 
-# 06시, 09시, 12시, 15시, 18시 눈금 표시
-tick_mask = [
-    (d.hour % 3 == 0) or (idx == 0) for idx, d in enumerate(plot_df["DATETIME"])
-]
-tick_vals = [
-    plot_df["KR_TIME"].iloc[i] for i in range(len(plot_df)) if tick_mask[i]
-]
-tick_texts = [
-    plot_df["HOUR_ONLY"].iloc[i] for i in range(len(plot_df)) if tick_mask[i]
-]
+    if plot_df.empty:
+        plot_df = (
+            df[(df["DATETIME"].dt.hour >= 6) & (df["DATETIME"].dt.hour <= 18)]
+            .head(13)
+            .copy()
+            .reset_index(drop=True)
+        )
 
-# 초기 기본 그래프 범위 고정 (이 범위보다 더 작게 축소되지 않도록 minallowed / maxallowed 설정)
-x_min_bound = -0.6
-x_max_bound = max(len(plot_df) - 0.4, 12.6)
+    # 06시, 09시, 12시, 15시, 18시 눈금 표시
+    tick_mask = [
+        (d.hour % 3 == 0) or (idx == 0)
+        for idx, d in enumerate(plot_df["DATETIME"])
+    ]
+    tick_vals = [
+        plot_df["KR_TIME"].iloc[i] for i in range(len(plot_df)) if tick_mask[i]
+    ]
+    tick_texts = [
+        plot_df["HOUR_ONLY"].iloc[i]
+        for i in range(len(plot_df))
+        if tick_mask[i]
+    ]
 
-chart_layout = dict(
-    paper_bgcolor="#ffffff",
-    plot_bgcolor="#f8f9fa",
-    font=dict(color="#111111", size=14),
-    dragmode="pan",  # 박스 선택 대신 부드러운 이동 및 휠/핀치 확대·축소 적용
-    hovermode="x unified",
-    hoverlabel=dict(bgcolor="#ffffff", font_size=14, font_color="#111111"),
-    margin=dict(l=38, r=14, t=35, b=50),
-    xaxis=dict(
-        title=dict(text="예보 시각 (06시 ~ 18시)", standoff=10),
-        tickmode="array",
-        tickvals=tick_vals,
-        ticktext=tick_texts,
-        tickangle=0,
-        range=[x_min_bound, x_max_bound],
-        minallowed=x_min_bound,  # 기본 크기보다 더 축소되지 않도록 하한 고정
-        maxallowed=x_max_bound,  # 기본 크기보다 더 축소되지 않도록 상한 고정
-        showgrid=True,
-        gridcolor="#dee2e6",
-        tickfont=dict(size=13, color="#111111"),
-    ),
-)
+    # 초기 기본 그래프 범위 고정
+    x_min_bound = -0.6
+    x_max_bound = max(len(plot_df) - 0.4, 12.6)
 
-# 마우스 휠 확대/축소 및 모바일 두 손가락 핀치 확대/축소 활성화
-plotly_config = {
-    "displayModeBar": False,
-    "scrollZoom": True,
-    "doubleClick": "reset",
-}
-
-# (1) 파도 높이 차트
-with st.container(border=True):
-    st.markdown(f"#### (1) 파도 높이 (유의파고) 예측 - {day_titles[sel_idx]}")
-    st.write(
-        "해안 데크 특성상 파도 높이가 **1.8m 이상**이면 물보라 및 월파 위험으로"
-        " 방문 자제가 권고되며, **3.0m 이상** 시 전면 출입 통제됩니다."
+    chart_layout = dict(
+        paper_bgcolor="#ffffff",
+        plot_bgcolor="#f8f9fa",
+        font=dict(color="#111111", size=14),
+        dragmode="pan",
+        hovermode="x unified",
+        hoverlabel=dict(bgcolor="#ffffff", font_size=14, font_color="#111111"),
+        margin=dict(l=38, r=14, t=35, b=50),
+        xaxis=dict(
+            title=dict(text="예보 시각 (06시 ~ 18시)", standoff=10),
+            tickmode="array",
+            tickvals=tick_vals,
+            ticktext=tick_texts,
+            tickangle=0,
+            range=[x_min_bound, x_max_bound],
+            minallowed=x_min_bound,
+            maxallowed=x_max_bound,
+            showgrid=True,
+            gridcolor="#dee2e6",
+            tickfont=dict(size=13, color="#111111"),
+        ),
     )
+
+    # (1) 파도 높이 차트
     y_max_wav = max(4.0, float(plot_df["WAV"].max()) + 0.5)
     fig_wav = go.Figure()
     fig_wav.add_trace(
@@ -764,15 +726,8 @@ with st.container(border=True):
         ),
         height=330,
     )
-    st.plotly_chart(fig_wav, width="stretch", config=plotly_config)
 
-# (2) 바람 세기 차트
-with st.container(border=True):
-    st.markdown(f"#### (2) 바람 세기 (풍속) 예측 - {day_titles[sel_idx]}")
-    st.write(
-        "바람 세기가 초속 **10.0m/s 이상**이면 보행 시 강풍 주의가 필요하며,"
-        " **14.0m/s 이상** 시 안전을 위해 출입이 통제됩니다."
-    )
+    # (2) 바람 세기 차트
     y_max_wsd = max(18.0, float(plot_df["WSD"].max()) + 2.0)
     fig_wsd = go.Figure()
     fig_wsd.add_trace(
@@ -817,12 +772,8 @@ with st.container(border=True):
         ),
         height=330,
     )
-    st.plotly_chart(fig_wsd, width="stretch", config=plotly_config)
 
-# (3) 1시간 강수량 차트 (15.0mm 데크 미끄럼 주의 기준)
-with st.container(border=True):
-    st.markdown(f"#### (3) 1시간 비 (강수량) 예측 - {day_titles[sel_idx]}")
-    st.write("시간당 **15.0mm 이상** 비가 내릴 경우 데크 미끄럼 주의가 요구됩니다.")
+    # (3) 1시간 강수량 차트
     y_max_pcp1 = max(25.0, float(plot_df["PCP_NUM"].max()) + 5.0)
     fig_pcp1 = go.Figure()
     fig_pcp1.add_trace(
@@ -855,15 +806,8 @@ with st.container(border=True):
         ),
         height=330,
     )
-    st.plotly_chart(fig_pcp1, width="stretch", config=plotly_config)
 
-# (4) 3시간 누적 강수량 차트 (60.0mm 호우 출입통제 기준 단독 분리)
-with st.container(border=True):
-    st.markdown(f"#### (4) 3시간 누적 비 (강수량) 예측 - {day_titles[sel_idx]}")
-    st.write(
-        "3시간 누적 강수량이 **60.0mm 이상**일 경우 집중호우 안전사고 예방을 위해"
-        " 출입이 통제됩니다."
-    )
+    # (4) 3시간 누적 강수량 차트
     y_max_pcp3 = max(75.0, float(plot_df["PCP_3H"].max()) + 10.0)
     fig_pcp3 = go.Figure()
     fig_pcp3.add_trace(
@@ -898,14 +842,8 @@ with st.container(border=True):
         ),
         height=330,
     )
-    st.plotly_chart(fig_pcp3, width="stretch", config=plotly_config)
 
-# (5) 신적설량 차트
-with st.container(border=True):
-    st.markdown(f"#### (5) 눈 (신적설량) 예측 - {day_titles[sel_idx]}")
-    st.write(
-        "**0.5cm 이상** 눈이 쌓일 경우 데크 결빙 방지를 위해 제설 후 개방됩니다."
-    )
+    # (5) 신적설량 차트
     y_max_sno = max(3.0, float(plot_df["SNO_NUM"].max()) + 1.0)
     fig_sno = go.Figure()
     fig_sno.add_trace(
@@ -938,68 +876,170 @@ with st.container(border=True):
         ),
         height=320,
     )
-    st.plotly_chart(fig_sno, width="stretch", config=plotly_config)
 
-st.write("")
+    # 하단 상세표 마크다운 생성
+    korean_table = plot_df[
+        ["HOUR_ONLY", "WAV", "WSD", "PCP_NUM", "PCP_3H", "TMP", "POP"]
+    ].copy()
 
-# ==============================================================================
-# 섹션 4. 시간대별 기상 예보 상세표 (06시~18시 전용 + 중앙 정렬)
-# ==============================================================================
-st.subheader(f"4. 시간대별 기상 예보 상세표 - {day_titles[sel_idx]}")
-st.write(
-    "선택하신 날짜의 06시부터 18시까지 시간대별 기상 수치와 탐방 여건 판정"
-    " 결과입니다. (단위: 파고 m, 풍속 m/s, 강수 mm, 기온 ℃, 비확률 %)"
-)
+    def get_row_status(row):
+        if (
+            row["WAV"] >= LIMITS["WAVE_DANGER"]
+            or row["WSD"] >= LIMITS["WIND_DANGER"]
+            or row["PCP_3H"] >= LIMITS["RAIN_3H_DANGER"]
+        ):
+            return "🔴통제예상"
+        elif (
+            row["WAV"] >= LIMITS["WAVE_CAUTION"]
+            or row["WSD"] >= LIMITS["WIND_CAUTION"]
+            or row["PCP_NUM"] >= LIMITS["RAIN_1H_CAUTION"]
+        ):
+            return "🟡방문주의"
+        return "🟢탐방양호"
 
-korean_table = plot_df[
-    ["HOUR_ONLY", "WAV", "WSD", "PCP_NUM", "PCP_3H", "TMP", "POP"]
-].copy()
+    korean_table["판정"] = korean_table.apply(get_row_status, axis=1)
+    korean_table["WAV"] = korean_table["WAV"].apply(lambda x: f"{x:.1f}m")
+    korean_table["WSD"] = korean_table["WSD"].apply(lambda x: f"{x:.1f}m/s")
+    korean_table["PCP_NUM"] = korean_table["PCP_NUM"].apply(
+        lambda x: "없음" if x == 0 else f"{x:.1f}mm"
+    )
+    korean_table["TMP"] = korean_table["TMP"].apply(lambda x: f"{int(x)}℃")
+    korean_table["POP"] = korean_table["POP"].apply(lambda x: f"{int(x)}%")
 
-
-def get_row_status(row):
-    if (
-        row["WAV"] >= LIMITS["WAVE_DANGER"]
-        or row["WSD"] >= LIMITS["WIND_DANGER"]
-        or row["PCP_3H"] >= LIMITS["RAIN_3H_DANGER"]
-    ):
-        return "🔴통제예상"
-    elif (
-        row["WAV"] >= LIMITS["WAVE_CAUTION"]
-        or row["WSD"] >= LIMITS["WIND_CAUTION"]
-        or row["PCP_NUM"] >= LIMITS["RAIN_1H_CAUTION"]
-    ):
-        return "🟡방문주의"
-    return "🟢탐방양호"
-
-
-korean_table["판정"] = korean_table.apply(get_row_status, axis=1)
-korean_table["WAV"] = korean_table["WAV"].apply(lambda x: f"{x:.1f}m")
-korean_table["WSD"] = korean_table["WSD"].apply(lambda x: f"{x:.1f}m/s")
-korean_table["PCP_NUM"] = korean_table["PCP_NUM"].apply(
-    lambda x: "없음" if x == 0 else f"{x:.1f}mm"
-)
-korean_table["TMP"] = korean_table["TMP"].apply(lambda x: f"{int(x)}℃")
-korean_table["POP"] = korean_table["POP"].apply(lambda x: f"{int(x)}%")
-
-# 표에 표시할 컬럼 정리
-korean_table = korean_table[
-    ["HOUR_ONLY", "WAV", "WSD", "PCP_NUM", "TMP", "POP", "판정"]
-]
-korean_table.columns = [
-    "시각",
-    "파고",
-    "풍속",
-    "강수",
-    "기온",
-    "비확률",
-    "판정",
-]
-
-st.markdown(
-    korean_table.to_markdown(
+    korean_table = korean_table[
+        ["HOUR_ONLY", "WAV", "WSD", "PCP_NUM", "TMP", "POP", "판정"]
+    ]
+    korean_table.columns = [
+        "시각",
+        "파고",
+        "풍속",
+        "강수",
+        "기온",
+        "비확률",
+        "판정",
+    ]
+    md_table = korean_table.to_markdown(
         index=False, colalign=("center",) * len(korean_table.columns)
     )
-)
+
+    return fig_wav, fig_wsd, fig_pcp1, fig_pcp3, fig_sno, md_table
+
+
+# 첫 화면 진입 시 오늘·내일·모레 3일 치 그래프와 표를 미리 캐시에 준비(Pre-warm)하여 첫 클릭 지연까지 제거
+for d_str in day_strs:
+    build_day_charts_and_table(df, d_str)
+
+plotly_config = {
+    "displayModeBar": False,
+    "scrollZoom": True,
+    "doubleClick": "reset",
+}
+
+
+@st.fragment
+def render_daily_charts_and_table():
+    """버튼 클릭 시 상단 화면은 그대로 두고 그래프와 상세표 영역만 단독으로 즉시 교체"""
+    st.subheader("3. 일자별 06시~18시 기상 추이 그래프")
+    st.write(
+        "아래에서 **오늘, 내일, 모레** 버튼을 누르시면 바다부채길 운영 및 점검"
+        " 시간대(**06시~18시**)의 날씨 그래프와 하단 상세표를 확인하실 수 있습니다."
+    )
+
+    sel_idx = st.session_state.selected_day_idx
+
+    # [오늘 / 내일 / 모레] 06시~18시 선택 버튼 (콜백 적용으로 1회 즉시 전환)
+    btn_c1, btn_c2, btn_c3 = st.columns(3)
+    with btn_c1:
+        st.button(
+            day_titles[0],
+            key="btn_day_0",
+            type="primary" if sel_idx == 0 else "secondary",
+            width="stretch",
+            on_click=select_day,
+            args=(0,),
+        )
+    with btn_c2:
+        st.button(
+            day_titles[1],
+            key="btn_day_1",
+            type="primary" if sel_idx == 1 else "secondary",
+            width="stretch",
+            on_click=select_day,
+            args=(1,),
+        )
+    with btn_c3:
+        st.button(
+            day_titles[2],
+            key="btn_day_2",
+            type="primary" if sel_idx == 2 else "secondary",
+            width="stretch",
+            on_click=select_day,
+            args=(2,),
+        )
+
+    sel_date_str = day_strs[sel_idx]
+    fig_wav, fig_wsd, fig_pcp1, fig_pcp3, fig_sno, md_table = (
+        build_day_charts_and_table(df, sel_date_str)
+    )
+
+    # (1) 파도 높이 차트
+    with st.container(border=True):
+        st.markdown(f"#### (1) 파도 높이 (유의파고) 예측 - {day_titles[sel_idx]}")
+        st.write(
+            "해안 데크 특성상 파도 높이가 **1.8m 이상**이면 물보라 및 월파 위험으로"
+            " 방문 자제가 권고되며, **3.0m 이상** 시 전면 출입 통제됩니다."
+        )
+        st.plotly_chart(fig_wav, width="stretch", config=plotly_config)
+
+    # (2) 바람 세기 차트
+    with st.container(border=True):
+        st.markdown(f"#### (2) 바람 세기 (풍속) 예측 - {day_titles[sel_idx]}")
+        st.write(
+            "바람 세기가 초속 **10.0m/s 이상**이면 보행 시 강풍 주의가 필요하며,"
+            " **14.0m/s 이상** 시 안전을 위해 출입이 통제됩니다."
+        )
+        st.plotly_chart(fig_wsd, width="stretch", config=plotly_config)
+
+    # (3) 1시간 강수량 차트
+    with st.container(border=True):
+        st.markdown(f"#### (3) 1시간 비 (강수량) 예측 - {day_titles[sel_idx]}")
+        st.write(
+            "시간당 **15.0mm 이상** 비가 내릴 경우 데크 미끄럼 주의가 요구됩니다."
+        )
+        st.plotly_chart(fig_pcp1, width="stretch", config=plotly_config)
+
+    # (4) 3시간 누적 강수량 차트
+    with st.container(border=True):
+        st.markdown(
+            f"#### (4) 3시간 누적 비 (강수량) 예측 - {day_titles[sel_idx]}"
+        )
+        st.write(
+            "3시간 누적 강수량이 **60.0mm 이상**일 경우 집중호우 안전사고 예방을"
+            " 위해 출입이 통제됩니다."
+        )
+        st.plotly_chart(fig_pcp3, width="stretch", config=plotly_config)
+
+    # (5) 신적설량 차트
+    with st.container(border=True):
+        st.markdown(f"#### (5) 눈 (신적설량) 예측 - {day_titles[sel_idx]}")
+        st.write(
+            "**0.5cm 이상** 눈이 쌓일 경우 데크 결빙 방지를 위해 제설 후"
+            " 개방됩니다."
+        )
+        st.plotly_chart(fig_sno, width="stretch", config=plotly_config)
+
+    st.write("")
+
+    # 섹션 4. 시간대별 기상 예보 상세표
+    st.subheader(f"4. 시간대별 기상 예보 상세표 - {day_titles[sel_idx]}")
+    st.write(
+        "선택하신 날짜의 06시부터 18시까지 시간대별 기상 수치와 탐방 여건 판정"
+        " 결과입니다. (단위: 파고 m, 풍속 m/s, 강수 mm, 기온 ℃, 비확률 %)"
+    )
+    st.markdown(md_table)
+
+
+render_daily_charts_and_table()
 
 st.divider()
 st.caption(
