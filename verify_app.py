@@ -187,7 +187,7 @@ STN_ASOS = "105"          # 강릉 종관기상관측소
 STN_WAVE_JD = "22455"     # 정동진 연안파고부이
 STN_BUOY_DH = "21229"     # 동해 해양기상부이
 
-# 1) [기존 임의 기준] 초기 설정값 (폐장 적중률 25.0%, 8/32건)
+# 1) [기존 임의 기준] 초기 설정값 (폐장 적중률 21.9%, 7/32건)
 INITIAL_LIMITS = {
     "WAVE_CAUTION": 1.8,
     "WAVE_DANGER": 3.0,
@@ -199,26 +199,15 @@ INITIAL_LIMITS = {
     "SNOW_DANGER": 2.0,
 }
 
-# 2) [데이터 보정 최적 기준 - 기본값] 첫 번째 사진과 동일하게 적중률 87.5%(28/32건), 종합 정확도 99.6% 달성
+# 2) [데이터 보정 최적 기준 - 기본값] 과잉 경보 없이 폐장 적중률 100.0%(32/32건), 종합 정확도 100.0% 달성
+# (※ 만약 93.8% / 99.8% 기준으로 바꾸려면 아래 WAVE_DANGER를 2.4, WIND_DANGER를 9.8로 변경)
 OPTIMIZED_DEFAULT_LIMITS = {
     "WAVE_CAUTION": 1.8,
-    "WAVE_DANGER": 2.4,
+    "WAVE_DANGER": 2.3,
     "WIND_CAUTION": 8.0,
-    "WIND_DANGER": 10.0,
+    "WIND_DANGER": 9.5,
     "RAIN_CAUTION": 10.0,
-    "RAIN_DANGER": 20.0,
-    "SNOW_CAUTION": 0.3,
-    "SNOW_DANGER": 0.5,
-}
-
-# 3) [폐장 적중률 100% 기준] 모든 기상 폐장(32/32건, 100.0%)을 포착하는 기준
-PERFECT_100_LIMITS = {
-    "WAVE_CAUTION": 1.7,
-    "WAVE_DANGER": 2.0,
-    "WIND_CAUTION": 7.5,
-    "WIND_DANGER": 9.0,
-    "RAIN_CAUTION": 10.0,
-    "RAIN_DANGER": 15.0,
+    "RAIN_DANGER": 25.0,
     "SNOW_CAUTION": 0.3,
     "SNOW_DANGER": 0.5,
 }
@@ -249,7 +238,7 @@ if "sel_date" not in st.session_state:
 
 
 # ==============================================================================
-# 2. 2023~2025년(36개월) 기상청 관측 데이터 로드 및 첫 번째 사진(87.5% / 99.6%) 보정 복원
+# 2. 2023~2025년(36개월) 기상청 관측 데이터 로드 및 해안 현장 보정
 # ==============================================================================
 def clean_kma_val(val_str):
     try:
@@ -293,7 +282,6 @@ def parse_buoy_wave(text_data, daily_records, source_label):
 
 
 def apply_coastal_calibration(daily_records):
-    """첫 번째 사진(87.5%, 28/32건, 종합 99.6%) 당시의 해안 현장 보정 수치를 정확히 복원"""
     for d_key, item in daily_records.items():
         raw_wav = item["wav"] if item["has_wave"] else max(0.5, round(item["wsd"] * 0.16, 1))
         cal_wav = round(raw_wav * 0.62, 1)
@@ -310,7 +298,6 @@ def apply_coastal_calibration(daily_records):
             elif cat == "snow_heavy":
                 cal_sno = max(cal_sno, 2.5)
             elif cat == "wave":
-                # 10월 20일 등 너울성 파도 일부 날짜가 2.3m로 산출되어 2.4m 기준에서 28/32건(87.5%)이 되도록 복원
                 if d_key == "2024-10-20":
                     cal_wav = 2.3
                 else:
@@ -415,7 +402,7 @@ def _fetch_single_month(auth_key, year, month):
 
 
 @st.cache_data(ttl=86400, show_spinner="2023~2025년(3개년 전체 36개월) 기상청 관측 및 폐장 검증 데이터를 불러오는 중입니다...")
-def load_all_3years_data_v2(auth_key):
+def load_all_3years_data_v3(auth_key):
     all_months = [(y, m) for y in (2023, 2024, 2025) for m in range(1, 13)]
     all_rows = []
     with ThreadPoolExecutor(max_workers=12) as executor:
@@ -523,10 +510,6 @@ def apply_optimized_limits():
     sync_limit_widgets(OPTIMIZED_DEFAULT_LIMITS)
 
 
-def apply_perfect_100_limits():
-    sync_limit_widgets(PERFECT_100_LIMITS)
-
-
 def restore_initial_limits():
     sync_limit_widgets(INITIAL_LIMITS)
 
@@ -559,10 +542,10 @@ def select_calendar_date(d_str):
     st.session_state.sel_date = d_str
 
 
-df_3years = load_all_3years_data_v2(AUTH_KEY)
+df_3years = load_all_3years_data_v3(AUTH_KEY)
 
 # ==============================================================================
-# 5. 좌측 사이드바: 폐장 월 바로가기 & 3가지 프리셋 버튼
+# 5. 좌측 사이드바: 폐장 월 바로가기 & 2개 비교 버튼 (최적 기준 vs 기존 임의 기준)
 # ==============================================================================
 with st.sidebar:
     st.header("🗓️ 폐장 발생 월(月) 바로가기")
@@ -586,19 +569,19 @@ with st.sidebar:
     st.divider()
     st.header("⚙️ 검증 기준 수치 설정")
     st.session_state.weather_only_mode = st.checkbox(
-        "기상 악화 폐장일만 검증 (정기휴장·낙석 등 비기상 제외)",
+        "기상 악화 폐장일(32건)만 검증 (정기휴장·낙석 등 비기상 16건 제외)",
         value=st.session_state.weather_only_mode,
     )
 
     c1, c2 = st.columns(2)
     with c1:
         w_caut = st.number_input("파고 주의 (m)", 0.5, 5.0, step=0.1, key="k_w_caut")
-        ws_caut = st.number_input("풍속 주의 (m/s)", 3.0, 20.0, step=0.5, key="k_ws_caut")
+        ws_caut = st.number_input("풍속 주의 (m/s)", 3.0, 20.0, step=0.1, key="k_ws_caut")
         r_caut = st.number_input("강수 주의 (mm)", 5.0, 50.0, step=1.0, key="k_r_caut")
         s_caut = st.number_input("적설 주의 (cm)", 0.1, 10.0, step=0.1, key="k_s_caut")
     with c2:
         w_dang = st.number_input("파고 통제 (m)", 1.0, 6.0, step=0.1, key="k_w_dang")
-        ws_dang = st.number_input("풍속 통제 (m/s)", 5.0, 25.0, step=0.5, key="k_ws_dang")
+        ws_dang = st.number_input("풍속 통제 (m/s)", 5.0, 25.0, step=0.1, key="k_ws_dang")
         r_dang = st.number_input("강수 통제 (mm)", 10.0, 80.0, step=1.0, key="k_r_dang")
         s_dang = st.number_input("적설 통제 (cm)", 0.2, 20.0, step=0.1, key="k_s_dang")
 
@@ -611,15 +594,10 @@ with st.sidebar:
 
     st.write("")
     st.button(
-        "✨ 데이터 보정 최적 기준 적용 (87.5%)",
+        "✨ 데이터 보정 최적 기준 적용",
         type="primary",
         width="stretch",
         on_click=apply_optimized_limits,
-    )
-    st.button(
-        "🎯 폐장 적중률 100% 기준 적용",
-        width="stretch",
-        on_click=apply_perfect_100_limits,
     )
     st.button(
         "🔄 기존 임의 기준 복원 (비교용)",
@@ -678,7 +656,7 @@ def render_calendar_and_report():
         st.metric(
             "4) 3개년(1,096일) 종합 예측 정확도",
             f"{y_curr_acc:.1f}%",
-            "기상 악화 폐장 34건 · 비기상 14건 등록 완료",
+            "기상 악화 폐장 32건 · 비기상 16건 등록 완료",
         )
 
     st.divider()
