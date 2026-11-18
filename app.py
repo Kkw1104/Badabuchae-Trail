@@ -71,14 +71,14 @@ GRID_NX = "96"
 GRID_NY = "131"
 
 LIMITS = {
-    "WAVE_CAUTION": 1.8,      # 파고 방문주의 예상 기준 (m)
+    "WAVE_CAUTION": 1.9,      # 파고 방문주의 예상 기준 (m)
     "WAVE_DANGER": 2.4,       # 파고 출입통제 예상 기준 (m)
     "WIND_CAUTION": 8.0,      # 풍속 방문주의 예상 기준 (m/s)
     "WIND_DANGER": 9.8,       # 풍속 출입통제 예상 기준 (m/s)
-    "RAIN_1H_CAUTION": 10.0,  # 1시간 강수 방문주의 예상 기준 (mm)
-    "RAIN_1H_DANGER": 20.0,   # 1시간 강수 출입통제 예상 기준 (mm)
-    "SNOW_CAUTION": 0.3,      # 적설 방문주의 예상 기준 (cm)
-    "SNOW_DANGER": 0.5,       # 적설 출입통제 예상 기준 (cm)
+    "RAIN_1H_CAUTION": 15.0,  # 1시간 강수 방문주의 예상 기준 (mm)
+    "RAIN_1H_DANGER": 28.0,   # 1시간 강수 출입통제 예상 기준 (mm)
+    "SNOW_CAUTION": 0.1,      # 적설 방문주의 예상 기준 (cm)
+    "SNOW_DANGER": 0.3,       # 적설 출입통제 예상 기준 (cm)
 }
 
 
@@ -109,7 +109,7 @@ def clean_numeric_val(val):
         return 0.0
     val_str = str(val).strip()
     if "미만" in val_str:
-        return 0.3
+        return 0.2
     m = re.search(r"(\d+(\.\d+)?)", val_str)
     return float(m.group(1)) if m else 0.0
 
@@ -219,7 +219,7 @@ def join_korean_factors(factors):
     if len(factors) == 1:
         return factors[0]
     if len(factors) == 2:
-        return f"{factors[0]}과(와) {factors[1]}" if False else f"{factors[0]} 및 {factors[1]}"
+        return f"{factors[0]} 및 {factors[1]}"
     return ", ".join(factors[:-1]) + f" 및 {factors[-1]}"
 
 
@@ -667,7 +667,7 @@ def select_day(idx):
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def build_day_charts_and_table_v4(df, sel_date_str):
+def build_day_charts_and_table_v5(df, sel_date_str):
     """0.1 CPU 환경에서도 버튼 클릭 시 재계산하지 않도록 그래프 4개와 표를 메모리에 캐싱"""
     plot_df = (
         df[
@@ -728,7 +728,7 @@ def build_day_charts_and_table_v4(df, sel_date_str):
         ),
     )
 
-    # (1) 파도 높이 차트 (마우스 오버 시 m 단위 표시 + 주의 1.8m / 통제 2.4m)
+    # (1) 파도 높이 차트 (마우스 오버 시 m 단위 표시 + 주의 1.9m / 통제 2.4m)
     y_max_wav = max(3.5, float(plot_df["WAV"].max()) + 0.5)
     fig_wav = go.Figure()
     fig_wav.add_trace(
@@ -822,8 +822,8 @@ def build_day_charts_and_table_v4(df, sel_date_str):
         height=330,
     )
 
-    # (3) 1시간 강수량 차트 (마우스 오버 시 mm 단위 표시 + 주의 10.0mm / 통제 20.0mm)
-    y_max_pcp1 = max(26.0, float(plot_df["PCP_NUM"].max()) + 5.0)
+    # (3) 1시간 강수량 차트 (마우스 오버 시 mm 단위 표시 + 주의 15.0mm / 통제 28.0mm)
+    y_max_pcp1 = max(33.0, float(plot_df["PCP_NUM"].max()) + 5.0)
     fig_pcp1 = go.Figure()
     fig_pcp1.add_trace(
         go.Bar(
@@ -867,8 +867,8 @@ def build_day_charts_and_table_v4(df, sel_date_str):
         height=330,
     )
 
-    # (4) 신적설량 차트 (마우스 오버 시 cm 단위 표시 + 주의 0.3cm / 통제 0.5cm)
-    y_max_sno = max(1.5, float(plot_df["SNO_NUM"].max()) + 0.5)
+    # (4) 신적설량 차트 (마우스 오버 시 cm 단위 표시 + 주의 0.1cm / 통제 0.3cm)
+    y_max_sno = max(1.0, float(plot_df["SNO_NUM"].max()) + 0.5)
     fig_sno = go.Figure()
     fig_sno.add_trace(
         go.Bar(
@@ -964,7 +964,7 @@ def build_day_charts_and_table_v4(df, sel_date_str):
 
 # 첫 화면 진입 시 오늘·내일·모레 3일 치 그래프와 표를 미리 캐시에 준비(Pre-warm)하여 첫 클릭 지연 제거
 for d_str in day_strs:
-    build_day_charts_and_table_v4(df, d_str)
+    build_day_charts_and_table_v5(df, d_str)
 
 plotly_config = {
     "displayModeBar": False,
@@ -1016,7 +1016,7 @@ def render_daily_charts_and_table():
 
     sel_date_str = day_strs[sel_idx]
     fig_wav, fig_wsd, fig_pcp1, fig_sno, md_table = (
-        build_day_charts_and_table_v4(df, sel_date_str)
+        build_day_charts_and_table_v5(df, sel_date_str)
     )
 
     # (1) 파도 높이 차트
