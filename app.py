@@ -72,11 +72,11 @@ GRID_NY = "131"
 
 LIMITS = {
     "WAVE_CAUTION": 1.8,      # 파고 방문주의 예상 기준 (m)
-    "WAVE_DANGER": 2.3,       # 파고 출입통제 예상 기준 (m)
+    "WAVE_DANGER": 2.4,       # 파고 출입통제 예상 기준 (m)
     "WIND_CAUTION": 8.0,      # 풍속 방문주의 예상 기준 (m/s)
-    "WIND_DANGER": 9.5,       # 풍속 출입통제 예상 기준 (m/s)
+    "WIND_DANGER": 9.8,       # 풍속 출입통제 예상 기준 (m/s)
     "RAIN_1H_CAUTION": 10.0,  # 1시간 강수 방문주의 예상 기준 (mm)
-    "RAIN_1H_DANGER": 25.0,   # 1시간 강수 출입통제 예상 기준 (mm)
+    "RAIN_1H_DANGER": 20.0,   # 1시간 강수 출입통제 예상 기준 (mm)
     "SNOW_CAUTION": 0.3,      # 적설 방문주의 예상 기준 (cm)
     "SNOW_DANGER": 0.5,       # 적설 출입통제 예상 기준 (cm)
 }
@@ -210,8 +210,60 @@ def fetch_forecast_data(auth_key, base_date, base_time):
 
 
 # ==============================================================================
-# 4. 금일 오전/오후 개방 전망 및 추천 탐방 시간대 산출
+# 4. 기준 초과 요인만 정확히 추출하는 동적 사유 생성 및 금일 개방 전망 산출
 # ==============================================================================
+def join_korean_factors(factors):
+    """초과된 기상 요인 리스트를 자연스러운 한국어 구문으로 연결"""
+    if not factors:
+        return ""
+    if len(factors) == 1:
+        return factors[0]
+    if len(factors) == 2:
+        return f"{factors[0]}과(와) {factors[1]}" if False else f"{factors[0]} 및 {factors[1]}"
+    return ", ".join(factors[:-1]) + f" 및 {factors[-1]}"
+
+
+def get_exceeded_factor_lists(wav, wsd, pcp, sno, pty_snow):
+    """
+    통제 예상 기준을 넘은 항목(danger_factors)과
+    방문 주의 예상 기준을 넘은 항목(caution_factors)을 각각 분리하여 반환
+    """
+    danger_factors = []
+    danger_short = []
+    if wav >= LIMITS["WAVE_DANGER"]:
+        danger_factors.append(f"높은 파도({wav:.1f}m)")
+        danger_short.append(f"높은 파도({wav:.1f}m)")
+    if wsd >= LIMITS["WIND_DANGER"]:
+        danger_factors.append(f"강한 풍속({wsd:.1f}m/s)")
+        danger_short.append(f"강한 풍속({wsd:.1f}m/s)")
+    if pcp >= LIMITS["RAIN_1H_DANGER"]:
+        danger_factors.append(f"강한 강수량({pcp:.1f}mm)")
+        danger_short.append(f"강한 강수({pcp:.1f}mm)")
+    if sno >= LIMITS["SNOW_DANGER"]:
+        danger_factors.append(f"많은 적설량({sno:.1f}cm)")
+        danger_short.append(f"적설({sno:.1f}cm)")
+
+    caution_factors = []
+    caution_short = []
+    if wav >= LIMITS["WAVE_CAUTION"]:
+        caution_factors.append(f"파도({wav:.1f}m)")
+        caution_short.append(f"파도({wav:.1f}m)")
+    if wsd >= LIMITS["WIND_CAUTION"]:
+        caution_factors.append(f"풍속({wsd:.1f}m/s)")
+        caution_short.append(f"풍속({wsd:.1f}m/s)")
+    if pcp >= LIMITS["RAIN_1H_CAUTION"]:
+        caution_factors.append(f"강수량({pcp:.1f}mm)")
+        caution_short.append(f"강수({pcp:.1f}mm)")
+    if sno >= LIMITS["SNOW_CAUTION"]:
+        caution_factors.append(f"적설량({sno:.1f}cm)")
+        caution_short.append(f"적설({sno:.1f}cm)")
+    elif pty_snow:
+        caution_factors.append("눈 예보")
+        caution_short.append("눈 예보")
+
+    return danger_factors, danger_short, caution_factors, caution_short
+
+
 def evaluate_today_risk(df):
     now_kst = get_now_kst()
     today_str = now_kst.strftime("%Y%m%d")
@@ -219,7 +271,7 @@ def evaluate_today_risk(df):
     if today_df.empty:
         today_df = df.head(24).copy()
 
-    # [오전 개장 전 점검 시간대: 06~08시]
+    # [1] 오전 개장 전 점검 시간대: 06~08시
     pre_data = today_df[today_df["fcstTime"].isin(["0600", "0700", "0800"])]
     if pre_data.empty:
         pre_data = today_df.head(3)
@@ -234,33 +286,33 @@ def evaluate_today_risk(df):
         else False
     )
 
-    if (
-        pre_wsd >= LIMITS["WIND_DANGER"]
-        or pre_wav >= LIMITS["WAVE_DANGER"]
-        or pre_pcp_1h >= LIMITS["RAIN_1H_DANGER"]
-        or pre_sno >= LIMITS["SNOW_DANGER"]
-    ):
+    m_d_factors, m_d_short, m_c_factors, m_c_short = get_exceeded_factor_lists(
+        pre_wav, pre_wsd, pre_pcp_1h, pre_sno, pre_pty_snow
+    )
+
+    if m_d_factors:
         m_level = "danger"
-        m_stat = "출입 통제 예상 (정시 개방 어려움)"
-        m_desc = f"오전 높은 파도({pre_wav:.1f}m), 강한 바람({pre_wsd:.1f}m/s) 또는 강수·적설 예보로 인해 안전상 통제될 가능성이 있습니다."
-    elif pre_sno >= LIMITS["SNOW_CAUTION"] or pre_pty_snow:
+        m_stat = f"출입 통제 예상 ({' · '.join(m_d_short)})"
+        m_desc = (
+            f"오전 시간대 {join_korean_factors(m_d_factors)} 예보로 인해 "
+            "안전상 정시 개방이 어렵고 출입이 통제될 가능성이 있습니다."
+        )
+    elif m_c_factors:
         m_level = "caution"
-        m_stat = "방문 주의 예상 (개장 지연 가능성)"
-        m_desc = "아침 눈 예보로 인해 탐방로 데크 제설 및 안전 점검 후 개방될 가능성이 있습니다."
-    elif (
-        pre_wsd >= LIMITS["WIND_CAUTION"]
-        or pre_wav >= LIMITS["WAVE_CAUTION"]
-        or pre_pcp_1h >= LIMITS["RAIN_1H_CAUTION"]
-    ):
-        m_level = "caution"
-        m_stat = "방문 주의 예상 (현장 확인 필요)"
-        m_desc = f"오전 파도({pre_wav:.1f}m)와 바람({pre_wsd:.1f}m/s)이 다소 강할 것으로 예보되어 현장 안전 점검 결과에 따라 변동될 가능성이 있습니다."
+        m_stat = f"방문 주의 예상 ({' · '.join(m_c_short)})"
+        m_desc = (
+            f"오전 시간대 {join_korean_factors(m_c_factors)}로 인해 방문 주의가 예상되며, "
+            "현장 안전 점검 결과에 따라 개방 여부가 변동될 가능성이 있습니다."
+        )
     else:
         m_level = "safe"
         m_stat = "정상 개방 예상 (09:00 정시 오픈)"
-        m_desc = f"오전 파도 높이 {pre_wav:.1f}m, 바람 세기 {pre_wsd:.1f}m/s로 기상이 양호하여 정상 개방될 것으로 예상됩니다."
+        m_desc = (
+            f"오전 파도 높이 {pre_wav:.1f}m, 풍속 {pre_wsd:.1f}m/s로 모든 기상 요소가 "
+            "안전 기준 이내로 양호하여 정상 개방될 것으로 예상됩니다."
+        )
 
-    # [주간 운영 시간대: 09~16시]
+    # [2] 주간 운영 시간대: 09~16시
     open_data = today_df[
         today_df["fcstTime"].isin(
             ["0900", "1000", "1100", "1200", "1300", "1400", "1500", "1600"]
@@ -279,34 +331,33 @@ def evaluate_today_risk(df):
         else False
     )
 
-    if open_sno >= LIMITS["SNOW_DANGER"]:
+    a_d_factors, a_d_short, a_c_factors, a_c_short = get_exceeded_factor_lists(
+        open_wav, open_wsd, open_pcp_1h, open_sno, open_pty_snow
+    )
+
+    if a_d_factors:
         a_level = "danger"
-        a_stat = "출입 통제 예상 (제설 및 결빙 통제 가능성)"
-        a_desc = f"일중 적설({open_sno:.1f}cm) 예보로 인해 미끄럼 사고 방지 및 제설 작업을 위해 입장이 통제될 가능성이 있습니다."
-    elif (
-        open_wsd >= LIMITS["WIND_DANGER"]
-        or open_wav >= LIMITS["WAVE_DANGER"]
-        or open_pcp_1h >= LIMITS["RAIN_1H_DANGER"]
-    ):
-        a_level = "danger"
-        a_stat = "출입 통제 예상 (기상 악화 가능성)"
-        a_desc = f"낮 시간대 강한 바람({open_wsd:.1f}m/s), 높은 파도({open_wav:.1f}m) 또는 강한 비 예보로 인해 입장이 통제될 가능성이 있습니다."
-    elif (
-        open_wsd >= LIMITS["WIND_CAUTION"]
-        or open_wav >= LIMITS["WAVE_CAUTION"]
-        or open_pcp_1h >= LIMITS["RAIN_1H_CAUTION"]
-        or open_sno >= LIMITS["SNOW_CAUTION"]
-        or open_pty_snow
-    ):
+        a_stat = f"출입 통제 예상 ({' · '.join(a_d_short)})"
+        a_desc = (
+            f"낮 시간대 {join_korean_factors(a_d_factors)} 예보로 인해 "
+            "관람객 안전을 위해 입장이 통제될 가능성이 있습니다."
+        )
+    elif a_c_factors:
         a_level = "caution"
-        a_stat = "방문 주의 예상 (기상 변화 유의)"
-        a_desc = f"오후 파도({open_wav:.1f}m) 또는 바람({open_wsd:.1f}m/s)이 다소 강할 것으로 예상되므로 탐방 시 안전에 유의하시기 바랍니다."
+        a_stat = f"방문 주의 예상 ({' · '.join(a_c_short)})"
+        a_desc = (
+            f"낮 시간대 {join_korean_factors(a_c_factors)}로 인해 방문 주의가 예상되므로 "
+            "탐방 시 안전에 유의하시기 바랍니다."
+        )
     else:
         a_level = "safe"
         a_stat = "정상 운영 예상 (전 구간 관람 양호)"
-        a_desc = f"낮 최고 파도 {open_wav:.1f}m, 바람 {open_wsd:.1f}m/s로 마감 시간까지 원활한 관람이 가능할 것으로 예상됩니다."
+        a_desc = (
+            f"낮 최고 파도 {open_wav:.1f}m, 풍속 {open_wsd:.1f}m/s로 모든 기상 요소가 "
+            "안전 기준 이내로 양호하여 마감 시간까지 원활한 관람이 가능할 것으로 예상됩니다."
+        )
 
-    # [쾌적 탐방 추천 시간대]
+    # [3] 쾌적 탐방 추천 시간대
     cur_h_str = f"{now_kst.hour:02d}00"
     rem_open = open_data[open_data["fcstTime"] >= cur_h_str].copy()
     if not rem_open.empty and now_kst.hour <= 16:
@@ -315,7 +366,7 @@ def evaluate_today_risk(df):
         ).iloc[0]
         b_hour = int(best_row["fcstTime"][:2])
         best_time = (
-            f"오늘 {b_hour}시 전후 (예상 파도 {best_row['WAV']:.1f}m, 바람"
+            f"오늘 {b_hour}시 전후 (예상 파도 {best_row['WAV']:.1f}m, 풍속"
             f" {best_row['WSD']:.1f}m/s로 가장 잔잔할 것으로 예상되는 시간대)"
         )
     else:
@@ -342,7 +393,7 @@ def evaluate_today_risk(df):
             b_hour = int(b_row["fcstTime"][:2])
             best_time = (
                 f"내일 {b_hour}시 전후 (금일 입장 마감 / 내일 예상 파도"
-                f" {b_row['WAV']:.1f}m, 바람 {b_row['WSD']:.1f}m/s)"
+                f" {b_row['WAV']:.1f}m, 풍속 {b_row['WSD']:.1f}m/s)"
             )
         else:
             best_time = "오전 09:00 이후 주간 시간대 예보를 확인해 주시기 바랍니다."
@@ -351,7 +402,7 @@ def evaluate_today_risk(df):
 
 
 # ==============================================================================
-# 5. 향후 5일간 일자별 개방 전망 산출
+# 5. 향후 5일간 일자별 개방 전망 산출 (초과 요인만 정확히 표시)
 # ==============================================================================
 def evaluate_5day_forecast(df):
     daily_results = []
@@ -420,25 +471,18 @@ def evaluate_5day_forecast(df):
             else False
         )
 
-        if (
-            max_wsd >= LIMITS["WIND_DANGER"]
-            or max_wav >= LIMITS["WAVE_DANGER"]
-            or max_pcp1h >= LIMITS["RAIN_1H_DANGER"]
-            or max_sno >= LIMITS["SNOW_DANGER"]
-        ):
+        _, d_short, _, c_short = get_exceeded_factor_lists(
+            max_wav, max_wsd, max_pcp1h, max_sno, has_snow
+        )
+
+        if d_short:
             level = "danger"
             status = "출입 통제 예상"
-            tip = "높은 파도·강풍 주의"
-        elif (
-            max_wsd >= LIMITS["WIND_CAUTION"]
-            or max_wav >= LIMITS["WAVE_CAUTION"]
-            or max_pcp1h >= LIMITS["RAIN_1H_CAUTION"]
-            or max_sno >= LIMITS["SNOW_CAUTION"]
-            or has_snow
-        ):
+            tip = f"{' · '.join(d_short)}로 인한 통제 가능성"
+        elif c_short:
             level = "caution"
             status = "방문 주의 예상"
-            tip = f"파도 {max_wav:.1f}m · 풍속 {max_wsd:.1f}m/s 유의"
+            tip = f"{' · '.join(c_short)} 유의"
         else:
             level = "safe"
             status = "정상 개방 예상"
@@ -623,7 +667,7 @@ def select_day(idx):
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def build_day_charts_and_table_v3(df, sel_date_str):
+def build_day_charts_and_table_v4(df, sel_date_str):
     """0.1 CPU 환경에서도 버튼 클릭 시 재계산하지 않도록 그래프 4개와 표를 메모리에 캐싱"""
     plot_df = (
         df[
@@ -684,7 +728,7 @@ def build_day_charts_and_table_v3(df, sel_date_str):
         ),
     )
 
-    # (1) 파도 높이 차트 (마우스 오버 시 m 단위 표시)
+    # (1) 파도 높이 차트 (마우스 오버 시 m 단위 표시 + 주의 1.8m / 통제 2.4m)
     y_max_wav = max(3.5, float(plot_df["WAV"].max()) + 0.5)
     fig_wav = go.Figure()
     fig_wav.add_trace(
@@ -731,7 +775,7 @@ def build_day_charts_and_table_v3(df, sel_date_str):
         height=330,
     )
 
-    # (2) 바람 세기 차트 (마우스 오버 시 m/s 단위 표시)
+    # (2) 바람 세기 차트 (마우스 오버 시 m/s 단위 표시 + 주의 8.0m/s / 통제 9.8m/s)
     y_max_wsd = max(14.0, float(plot_df["WSD"].max()) + 2.0)
     fig_wsd = go.Figure()
     fig_wsd.add_trace(
@@ -778,8 +822,8 @@ def build_day_charts_and_table_v3(df, sel_date_str):
         height=330,
     )
 
-    # (3) 1시간 강수량 차트 (마우스 오버 시 mm 단위 표시 + 주의 10mm / 통제 25mm 기준선)
-    y_max_pcp1 = max(30.0, float(plot_df["PCP_NUM"].max()) + 5.0)
+    # (3) 1시간 강수량 차트 (마우스 오버 시 mm 단위 표시 + 주의 10.0mm / 통제 20.0mm)
+    y_max_pcp1 = max(26.0, float(plot_df["PCP_NUM"].max()) + 5.0)
     fig_pcp1 = go.Figure()
     fig_pcp1.add_trace(
         go.Bar(
@@ -823,7 +867,7 @@ def build_day_charts_and_table_v3(df, sel_date_str):
         height=330,
     )
 
-    # (4) 신적설량 차트 (마우스 오버 시 cm 단위 표시 + 주의 0.3cm / 통제 0.5cm 기준선)
+    # (4) 신적설량 차트 (마우스 오버 시 cm 단위 표시 + 주의 0.3cm / 통제 0.5cm)
     y_max_sno = max(1.5, float(plot_df["SNO_NUM"].max()) + 0.5)
     fig_sno = go.Figure()
     fig_sno.add_trace(
@@ -920,7 +964,7 @@ def build_day_charts_and_table_v3(df, sel_date_str):
 
 # 첫 화면 진입 시 오늘·내일·모레 3일 치 그래프와 표를 미리 캐시에 준비(Pre-warm)하여 첫 클릭 지연 제거
 for d_str in day_strs:
-    build_day_charts_and_table_v3(df, d_str)
+    build_day_charts_and_table_v4(df, d_str)
 
 plotly_config = {
     "displayModeBar": False,
@@ -972,15 +1016,15 @@ def render_daily_charts_and_table():
 
     sel_date_str = day_strs[sel_idx]
     fig_wav, fig_wsd, fig_pcp1, fig_sno, md_table = (
-        build_day_charts_and_table_v3(df, sel_date_str)
+        build_day_charts_and_table_v4(df, sel_date_str)
     )
 
     # (1) 파도 높이 차트
     with st.container(border=True):
         st.markdown(f"#### (1) 파도 높이 (유의파고) 예측 - {day_titles[sel_idx]}")
         st.write(
-            "해안 데크 특성상 파도 높이가 **1.8m 이상**으로 예보되면 물보라 및 월파"
-            " 위험으로 방문 주의가 예상되며, **2.3m 이상**일 경우 전면 출입 통제될"
+            f"해안 데크 특성상 파도 높이가 **{LIMITS['WAVE_CAUTION']}m 이상**으로 예보되면 물보라 및 월파"
+            f" 위험으로 방문 주의가 예상되며, **{LIMITS['WAVE_DANGER']}m 이상**일 경우 전면 출입 통제될"
             " 가능성이 있습니다."
         )
         st.plotly_chart(fig_wav, width="stretch", config=plotly_config)
@@ -989,8 +1033,8 @@ def render_daily_charts_and_table():
     with st.container(border=True):
         st.markdown(f"#### (2) 바람 세기 (풍속) 예측 - {day_titles[sel_idx]}")
         st.write(
-            "바람 세기가 초속 **8.0m/s 이상**으로 예보되면 보행 시 강풍으로 인한"
-            " 방문 주의가 예상되며, **9.5m/s 이상**일 경우 안전을 위해 출입이"
+            f"바람 세기가 초속 **{LIMITS['WIND_CAUTION']}m/s 이상**으로 예보되면 보행 시 강풍으로 인한"
+            f" 방문 주의가 예상되며, **{LIMITS['WIND_DANGER']}m/s 이상**일 경우 안전을 위해 출입이"
             " 통제될 가능성이 있습니다."
         )
         st.plotly_chart(fig_wsd, width="stretch", config=plotly_config)
@@ -999,8 +1043,8 @@ def render_daily_charts_and_table():
     with st.container(border=True):
         st.markdown(f"#### (3) 1시간 비 (강수량) 예측 - {day_titles[sel_idx]}")
         st.write(
-            "시간당 **10.0mm 이상** 비가 예보될 경우 데크 미끄럼 등으로 방문 주의가"
-            " 예상되며, **25.0mm 이상**일 경우 집중호우 안전사고 예방을 위해"
+            f"시간당 **{LIMITS['RAIN_1H_CAUTION']}mm 이상** 비가 예보될 경우 데크 미끄럼 등으로 방문 주의가"
+            f" 예상되며, **{LIMITS['RAIN_1H_DANGER']}mm 이상**일 경우 집중호우 안전사고 예방을 위해"
             " 출입이 통제될 가능성이 있습니다."
         )
         st.plotly_chart(fig_pcp1, width="stretch", config=plotly_config)
@@ -1009,8 +1053,8 @@ def render_daily_charts_and_table():
     with st.container(border=True):
         st.markdown(f"#### (4) 눈 (신적설량) 예측 - {day_titles[sel_idx]}")
         st.write(
-            "시간당 **0.3cm 이상** 눈이 쌓일 것으로 예보되면 미끄럼 방문 주의가"
-            " 예상되며, **0.5cm 이상**일 경우 데크 결빙 방지를 위해 출입이 통제될"
+            f"시간당 **{LIMITS['SNOW_CAUTION']}cm 이상** 눈이 쌓일 것으로 예보되면 미끄럼 방문 주의가"
+            f" 예상되며, **{LIMITS['SNOW_DANGER']}cm 이상**일 경우 데크 결빙 방지를 위해 출입이 통제될"
             " 가능성이 있습니다."
         )
         st.plotly_chart(fig_sno, width="stretch", config=plotly_config)
