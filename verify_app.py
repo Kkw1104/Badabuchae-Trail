@@ -187,7 +187,7 @@ STN_ASOS = "105"          # 강릉 종관기상관측소
 STN_WAVE_JD = "22455"     # 정동진 연안파고부이
 STN_BUOY_DH = "21229"     # 동해 해양기상부이
 
-# 1) [기존 임의 기준] 초기 설정값 (폐장 적중률 21.9%, 7/32건)
+# 1) [기존 임의 기준] 초기 설정값 (비교용)
 INITIAL_LIMITS = {
     "WAVE_CAUTION": 1.8,
     "WAVE_DANGER": 3.0,
@@ -199,17 +199,16 @@ INITIAL_LIMITS = {
     "SNOW_DANGER": 2.0,
 }
 
-# 2) [데이터 보정 최적 기준 - 기본값] 과잉 경보 없이 폐장 적중률 100.0%(32/32건), 종합 정확도 100.0% 달성
-# (※ 만약 93.8% / 99.8% 기준으로 바꾸려면 아래 WAVE_DANGER를 2.4, WIND_DANGER를 9.8로 변경)
+# 2) [데이터 보정 최적 기준 - 최종 확정값] 본 사이트(app.py)와 동일하게 설정
 OPTIMIZED_DEFAULT_LIMITS = {
-    "WAVE_CAUTION": 1.8,
-    "WAVE_DANGER": 2.3,
+    "WAVE_CAUTION": 1.9,
+    "WAVE_DANGER": 2.4,
     "WIND_CAUTION": 8.0,
-    "WIND_DANGER": 9.5,
-    "RAIN_CAUTION": 10.0,
-    "RAIN_DANGER": 25.0,
-    "SNOW_CAUTION": 0.3,
-    "SNOW_DANGER": 0.5,
+    "WIND_DANGER": 9.8,
+    "RAIN_CAUTION": 15.0,
+    "RAIN_DANGER": 28.0,
+    "SNOW_CAUTION": 0.1,
+    "SNOW_DANGER": 0.3,
 }
 
 
@@ -225,8 +224,11 @@ def sync_limit_widgets(lim_dict):
     st.session_state.k_s_dang = float(lim_dict["SNOW_DANGER"])
 
 
-if "custom_limits" not in st.session_state:
+# 코드 업데이트 시 새 기준값(v4)으로 자동 동기화
+if st.session_state.get("preset_version") != "v4":
     sync_limit_widgets(OPTIMIZED_DEFAULT_LIMITS)
+    st.session_state.preset_version = "v4"
+
 if "weather_only_mode" not in st.session_state:
     st.session_state.weather_only_mode = True
 if "sel_year" not in st.session_state:
@@ -402,7 +404,7 @@ def _fetch_single_month(auth_key, year, month):
 
 
 @st.cache_data(ttl=86400, show_spinner="2023~2025년(3개년 전체 36개월) 기상청 관측 및 폐장 검증 데이터를 불러오는 중입니다...")
-def load_all_3years_data_v3(auth_key):
+def load_all_3years_data_v4(auth_key):
     all_months = [(y, m) for y in (2023, 2024, 2025) for m in range(1, 13)]
     all_rows = []
     with ThreadPoolExecutor(max_workers=12) as executor:
@@ -447,9 +449,9 @@ def diagnose_day(row, limits):
         caution_reasons.append(f"시간강수량 {rn1h:.1f}mm (주의 {limits['RAIN_CAUTION']}mm)")
 
     if sno3h >= limits["SNOW_DANGER"]:
-        danger_reasons.append(f"신적설 {sno3h:.1f}cm (통제 {limits['SNOW_DANGER']}cm)")
+        danger_reasons.append(f"3시간 신적설 {sno3h:.1f}cm (통제 {limits['SNOW_DANGER']}cm)")
     elif sno3h >= limits["SNOW_CAUTION"]:
-        caution_reasons.append(f"신적설 {sno3h:.1f}cm (주의 {limits['SNOW_CAUTION']}cm)")
+        caution_reasons.append(f"3시간 신적설 {sno3h:.1f}cm (주의 {limits['SNOW_CAUTION']}cm)")
 
     if danger_reasons:
         return "통제 예상", " · ".join(danger_reasons + caution_reasons)
@@ -542,7 +544,7 @@ def select_calendar_date(d_str):
     st.session_state.sel_date = d_str
 
 
-df_3years = load_all_3years_data_v3(AUTH_KEY)
+df_3years = load_all_3years_data_v4(AUTH_KEY)
 
 # ==============================================================================
 # 5. 좌측 사이드바: 폐장 월 바로가기 & 2개 비교 버튼 (최적 기준 vs 기존 임의 기준)
